@@ -1,4 +1,5 @@
 #include "chibicc.h"
+#include "eventchain_compiler.h"
 
 typedef enum {
   FILE_NONE, FILE_C, FILE_ASM, FILE_OBJ, FILE_AR, FILE_DSO,
@@ -9,7 +10,7 @@ bool opt_fcommon = true;
 bool opt_fpic;
 
 static FileType opt_x;
-static StringArray opt_include;
+StringArray opt_include;
 static bool opt_E;
 static bool opt_M;
 static bool opt_MD;
@@ -514,57 +515,39 @@ static Token *append_tokens(Token *tok1, Token *tok2) {
 
 static void cc1(void) {
   Token *tok = NULL;
-
-  // Process -include option
-  for (int i = 0; i < opt_include.len; i++) {
-    char *incl = opt_include.data[i];
-
-    char *path;
-    if (file_exists(incl)) {
-      path = incl;
-    } else {
-      path = search_include_paths(incl);
-      if (!path)
-        error("-include: %s: %s", incl, strerror(errno));
-    }
-
-    Token *tok2 = must_tokenize_file(path);
-    tok = append_tokens(tok, tok2);
+  
+  /* For -E or -M, only run tokenize and preprocess */
+  bool preprocess_only = opt_E || opt_M;
+  
+  int result = compile_with_eventchains(base_file, output_file, preprocess_only);
+  if (result != 0) {
+    error("Compilation failed");
   }
-
-  // Tokenize and parse.
-  Token *tok2 = must_tokenize_file(base_file);
-  tok = append_tokens(tok, tok2);
-  tok = preprocess(tok);
-
-  // If -M or -MD are given, print file dependencies.
+  
+  /* Print dependencies if -M, -MD, or -MMD */
   if (opt_M || opt_MD) {
     print_dependencies();
-    if (opt_M)
+    if (opt_M) {
+      cleanup_eventchain_context();
       return;
+    }
   }
-
-  // If -E is given, print out preprocessed C code as a result.
+  
+  /* Handle -E: print preprocessed tokens */
   if (opt_E) {
+    tok = get_preprocessed_tokens();
+    if (!tok) {
+      error("Failed to get preprocessed tokens");
+    }
     print_tokens(tok);
+    cleanup_eventchain_context();
     return;
   }
-
-  Obj *prog = parse(tok);
-
-  // Open a temporary output buffer.
-  char *buf;
-  size_t buflen;
-  FILE *output_buf = open_memstream(&buf, &buflen);
-
-  // Traverse the AST to emit assembly.
-  codegen(prog, output_buf);
-  fclose(output_buf);
-
-  // Write the asembly text to a file.
-  FILE *out = open_file(output_file);
-  fwrite(buf, buflen, 1, out);
-  fclose(out);
+  
+  /* Cleanup context if we used preprocess_only mode */
+  if (preprocess_only) {
+    cleanup_eventchain_context();
+  }
 }
 
 static void assemble(char *input, char *output) {

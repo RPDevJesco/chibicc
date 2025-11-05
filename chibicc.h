@@ -455,3 +455,4 @@ extern StringArray include_paths;
 extern bool opt_fpic;
 extern bool opt_fcommon;
 extern char *base_file;
+extern StringArray opt_include;

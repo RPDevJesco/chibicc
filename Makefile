@@ -1,6 +1,6 @@
 CFLAGS=-std=c11 -g -fno-common -Wall -Wno-switch
 
-SRCS=$(wildcard *.c)
+SRCS=$(wildcard *.c) $(wildcard src/eventchain/*.c)
 OBJS=$(SRCS:.c=.o)
 
 TEST_SRCS=$(wildcard test/*.c)

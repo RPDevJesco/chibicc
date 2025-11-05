@@ -1,4 +1,8 @@
 #include "chibicc.h"
+#include "chibicc_events.h"
+#include "middleware/timing_middleware.h"
+#include "middleware/logging_middleware.h"
+#include "middleware/memory_monitor_middleware.h"
 
 typedef enum {
   FILE_NONE, FILE_C, FILE_ASM, FILE_OBJ, FILE_AR, FILE_DSO,
@@ -21,6 +25,7 @@ static bool opt_cc1;
 static bool opt_hash_hash_hash;
 static bool opt_static;
 static bool opt_shared;
+static bool opt_eventchains;
 static char *opt_MF;
 static char *opt_MT;
 static char *opt_o;
@@ -129,6 +134,11 @@ static void parse_args(int argc, char **argv) {
 
     if (!strcmp(argv[i], "-cc1")) {
       opt_cc1 = true;
+      continue;
+    }
+
+    if (!strcmp(argv[i], "--eventchains")) {
+      opt_eventchains = true;
       continue;
     }
 
@@ -567,6 +577,111 @@ static void cc1(void) {
   fclose(out);
 }
 
+static void cc1_with_eventchains(void) {
+  fprintf(stderr, "\n=== ChiBiCC with EventChains Pattern ===\n");
+  fprintf(stderr, "Compiling: %s\n", base_file);
+  fprintf(stderr, "Output: %s\n\n", output_file);
+
+  EventChain *chain = event_chain_create(FAULT_TOLERANCE_LENIENT);
+  if (!chain) {
+    error("Failed to create EventChain");
+  }
+
+  EventContext *ctx = event_chain_get_context(chain);
+  event_context_set(ctx, "input_file", base_file);
+  event_context_set(ctx, "output_file", output_file);
+
+  // Process -include files first (traditional path)
+  Token *tok = NULL;
+  for (int i = 0; i < opt_include.len; i++) {
+    char *incl = opt_include.data[i];
+    char *path;
+    if (file_exists(incl)) {
+      path = incl;
+    } else {
+      path = search_include_paths(incl);
+      if (!path)
+        error("-include: %s: %s", incl, strerror(errno));
+    }
+    Token *tok2 = must_tokenize_file(path);
+    tok = append_tokens(tok, tok2);
+  }
+
+  if (tok) {
+    event_context_set(ctx, "include_tokens", tok);
+  }
+
+  ChainableEvent *tokenize_event = chainable_event_create(
+    tokenize_event_execute, NULL, "Tokenize");
+  ChainableEvent *preprocess_event = chainable_event_create(
+    preprocess_event_execute, NULL, "Preprocess");
+  ChainableEvent *parse_event = chainable_event_create(
+    parse_event_execute, NULL, "Parse");
+  ChainableEvent *codegen_event = chainable_event_create(
+    codegen_event_execute, NULL, "Codegen");
+
+  event_chain_add_event(chain, tokenize_event);
+  event_chain_add_event(chain, preprocess_event);
+  event_chain_add_event(chain, parse_event);
+  event_chain_add_event(chain, codegen_event);
+
+  EventMiddleware *timing = event_middleware_create(
+    timing_middleware, NULL, "TimingMiddleware");
+  EventMiddleware *logging = event_middleware_create(
+    logging_middleware, NULL, "LoggingMiddleware");
+  EventMiddleware *memory = event_middleware_create(
+    memory_monitor_middleware, NULL, "MemoryMonitor");
+
+  event_chain_use_middleware(chain, memory);
+  event_chain_use_middleware(chain, timing);
+  event_chain_use_middleware(chain, logging);
+
+  fprintf(stderr, "Executing compilation pipeline...\n\n");
+  ChainResult result = event_chain_execute(chain);
+
+  fprintf(stderr, "\n=== Compilation Result ===\n");
+  if (result.success) {
+    fprintf(stderr, "✓ Compilation successful\n");
+    
+    void *assembly_ptr = NULL;
+    void *assembly_len_ptr = NULL;
+    
+    if (event_context_get(ctx, "assembly", &assembly_ptr) == EC_SUCCESS &&
+        event_context_get(ctx, "assembly_length", &assembly_len_ptr) == EC_SUCCESS &&
+        assembly_ptr && assembly_len_ptr) {
+      
+      char *assembly = (char *)assembly_ptr;
+      size_t assembly_len = *(size_t *)assembly_len_ptr;
+      
+      FILE *out = open_file(output_file);
+      fwrite(assembly, assembly_len, 1, out);
+      fclose(out);
+      
+      fprintf(stderr, "✓ Assembly written to %s (%zu bytes)\n", output_file, assembly_len);
+    } else {
+      error("Failed to retrieve assembly from context");
+    }
+  } else {
+    fprintf(stderr, "✗ Compilation failed\n");
+    if (result.failure_count > 0) {
+      fprintf(stderr, "\nFailures:\n");
+      for (size_t i = 0; i < result.failure_count; i++) {
+        fprintf(stderr, "  [%s] %s\n", 
+                result.failures[i].event_name,
+                result.failures[i].error_message);
+      }
+    }
+    chain_result_destroy(&result);
+    event_chain_destroy(chain);
+    error("Compilation failed");
+  }
+
+  fprintf(stderr, "\n");
+  
+  chain_result_destroy(&result);
+  event_chain_destroy(chain);
+}
+
 static void assemble(char *input, char *output) {
   char *cmd[] = {"as", "-c", input, "-o", output, NULL};
   run_subprocess(cmd);
@@ -704,7 +819,11 @@ int main(int argc, char **argv) {
 
   if (opt_cc1) {
     add_default_include_paths(argv[0]);
-    cc1();
+    if (opt_eventchains) {
+      cc1_with_eventchains();
+    } else {
+      cc1();
+    }
     return 0;
   }
 

@@ -14,6 +14,7 @@
 
 /* Global to store the last EventContext for retrieving tokens */
 static EventContext *last_context = NULL;
+static EventChain *last_chain = NULL;
 
 int compile_with_eventchains(const char *input_file, const char *output_file, bool preprocess_only) {
     /* Create event chain */
@@ -61,14 +62,15 @@ int compile_with_eventchains(const char *input_file, const char *output_file, bo
     
     int ret = result.success ? 0 : 1;
     
-    /* Don't cleanup chain yet if preprocess_only - we need to retrieve tokens */
     if (!preprocess_only) {
         chain_result_destroy(&result);
         event_chain_destroy(chain);
         last_context = NULL;
+        last_chain = NULL;
     } else {
         chain_result_destroy(&result);
         /* Keep chain alive for token retrieval, will be cleaned up later */
+        last_chain = chain;
     }
     
     return ret;
@@ -88,8 +90,13 @@ Token *get_preprocessed_tokens(void) {
     return (Token *)tokens_ptr;
 }
 
-/* Cleanup the stored context */
+/* Cleanup the stored context and chain */
 void cleanup_eventchain_context(void) {
-    /* Note: The actual chain cleanup happens elsewhere */
+    /* Destroy the chain if it exists */
+    if (last_chain) {
+        event_chain_destroy(last_chain);
+        last_chain = NULL;
+    }
+    
     last_context = NULL;
 }

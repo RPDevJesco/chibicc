@@ -9,6 +9,7 @@ RUN apt-get update && apt-get install -y \
     make \
     binutils \
     libc6-dev \
+    file \
     && rm -rf /var/lib/apt/lists/*
 
 # Set working directory
